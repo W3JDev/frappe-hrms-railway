@@ -1,40 +1,24 @@
 #!/bin/bash
 set -e
 
-SETUP_FLAG="/home/frappe/bench/sites/.setup_complete"
-
 echo "-> Starting MariaDB..."
 sudo service mariadb start
-sleep 5
+sleep 8
+
+SETUP_FLAG="/home/frappe/bench/sites/.hrms_installed"
 
 if [ ! -f "$SETUP_FLAG" ]; then
     echo "============================================="
-    echo "-> First boot: Creating ERPNext + HRMS site"
+    echo "-> Installing HRMS into site1.local..."
     echo "============================================="
-
-    # Set MariaDB root password
-    sudo mysqladmin -u root password "frappe123" 2>/dev/null || true
-
-    echo "-> Create new site"
     cd /home/frappe/bench
-    bench new-site frontend \
-        --admin-password admin123 \
-        --db-root-password frappe123 \
-        --install-app erpnext
-
-    echo "-> Install HRMS"
-    bench --site frontend install-app hrms
-
-    echo "-> Enable scheduler"
-    bench use frontend
-    bench enable-scheduler
-
-    echo "-> Migrate"
-    bench --site frontend migrate
-
+    bench get-app https://github.com/frappe/hrms --branch version-15
+    bench --site site1.local install-app hrms
+    bench --site site1.local migrate --skip-failing
     touch "$SETUP_FLAG"
-    echo "-> Setup complete!"
+    echo "-> HRMS installed successfully!"
 fi
 
 echo "-> Starting ERPNext..."
+cd /home/frappe/bench
 exec bench start
