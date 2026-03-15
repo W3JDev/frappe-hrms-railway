@@ -2,14 +2,13 @@ FROM pipech/erpnext-docker-debian:version-15-latest
 
 USER root
 
-# Install HRMS app into the bench
-USER frappe
-WORKDIR /home/frappe/bench
-RUN bench get-app https://github.com/frappe/hrms --branch version-15
+# Start MariaDB, install HRMS into the existing site1.local, then stop
+RUN service mariadb start && sleep 5 \
+    && su frappe -c "cd /home/frappe/bench && bench get-app https://github.com/frappe/hrms --branch version-15" \
+    && su frappe -c "cd /home/frappe/bench && bench --site site1.local install-app hrms" \
+    && su frappe -c "cd /home/frappe/bench && bench --site site1.local migrate" \
+    && service mariadb stop \
+    && echo "HRMS installed successfully"
 
-USER root
-COPY --chmod=0755 auto-start.sh /usr/local/bin/auto-start.sh
-
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 EXPOSE 8000
-
-CMD ["/usr/local/bin/auto-start.sh"]
