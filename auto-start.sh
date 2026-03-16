@@ -11,19 +11,20 @@ until mysqladmin ping -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSW
 done
 echo "-> MariaDB is ready!"
 
-SETUP_FLAG="/home/frappe/bench/sites/.setup_complete"
+# --- 2. Check if DB is actually set up by looking for tabSingles table ---
+DB_READY=$(mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='frappe_hrms' AND table_name='tabSingles';" -sN 2>/dev/null)
 
-if [ ! -f "$SETUP_FLAG" ]; then
-  echo "-> First boot: setting up site from scratch..."
+if [ "$DB_READY" != "1" ]; then
+  echo "-> DB not initialized. Running full setup..."
 
-  # --- 2. Drop old stale site if exists ---
+  # --- 3. Drop old stale site if exists ---
   if [ -d "/home/frappe/bench/sites/site1.local" ]; then
     echo "-> Removing stale site1.local directory..."
     rm -rf /home/frappe/bench/sites/site1.local
   fi
 
-  # --- 3. Drop and recreate DB + user cleanly using root ---
-  echo "-> Dropping old DB/user if exists..."
+  # --- 4. Drop and recreate DB + user cleanly ---
+  echo "-> Recreating DB and user..."
   mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" <<EOF
 DROP DATABASE IF EXISTS frappe_hrms;
 DROP USER IF EXISTS 'frappe_hrms'@'%';
@@ -34,7 +35,7 @@ FLUSH PRIVILEGES;
 EOF
   echo "-> DB and user ready!"
 
-  # --- 4. Get HRMS app if not present ---
+  # --- 5. Get HRMS app if not present ---
   if [ ! -d "/home/frappe/bench/apps/hrms" ]; then
     echo "-> Downloading HRMS app..."
     su -s /bin/bash frappe -c "cd /home/frappe/bench && bench get-app https://github.com/frappe/hrms --branch version-15"
@@ -42,7 +43,7 @@ EOF
     echo "-> HRMS app already present."
   fi
 
-  # --- 5. Create site with explicit db-name and db-password ---
+  # --- 6. Create site with explicit db-name and db-password ---
   echo "-> Creating site1.local via bench new-site..."
   su -s /bin/bash frappe -c "
     cd /home/frappe/bench && \
@@ -58,20 +59,19 @@ EOF
     --install-app erpnext
   "
 
-  # --- 6. Install HRMS ---
+  # --- 7. Install HRMS ---
   echo "-> Installing HRMS app on site1.local..."
   su -s /bin/bash frappe -c "cd /home/frappe/bench && bench --site site1.local install-app hrms"
 
-  # --- 7. Run migrations ---
+  # --- 8. Run migrations ---
   echo "-> Running migrations..."
   su -s /bin/bash frappe -c "cd /home/frappe/bench && bench --site site1.local migrate --skip-failing"
 
-  touch "$SETUP_FLAG"
   echo "-> Site setup complete!"
 else
-  echo "-> Site already set up, skipping new-site."
+  echo "-> DB already initialized (tabSingles exists). Skipping new-site."
 fi
 
-# --- 8. Start bench ---
+# --- 9. Start bench ---
 echo "-> Starting ERPNext + HRMS..."
 exec su -s /bin/bash frappe -c "cd /home/frappe/bench && bench start"
