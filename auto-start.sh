@@ -1,5 +1,4 @@
 #!/bin/bash
-set -e
 echo "====================================="
 echo " Frappe HRMS - Railway Entrypoint"
 echo "====================================="
@@ -18,15 +17,28 @@ DB_READY=$(mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}"
   -sN 2>/dev/null || echo "0")
 
 if [ "$DB_READY" != "1" ]; then
-  echo "-> DB not initialized. Running full setup in background..."
+  echo "-> DB not initialized. Running full setup..."
 
-  # Start a dummy HTTP server on port 8000 so Railway health check passes
-  echo "-> Starting temporary HTTP placeholder on port 8000..."
-  while true; do
-    echo -e 'HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nSetting up...' | nc -l -p 8000 -q 1 2>/dev/null || true
-  done &
+  # Start Python HTTP placeholder on port 8000 to pass Railway health check
+  echo "-> Starting HTTP placeholder on port 8000..."
+  python3 -c "
+import http.server, threading, time
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'Setting up...')
+    def log_message(self, *a): pass
+s = http.server.HTTPServer(('0.0.0.0', 8000), H)
+t = threading.Thread(target=s.serve_forever)
+t.daemon = True
+t.start()
+print('Placeholder ready')
+time.sleep(99999)
+" &
   PLACEHOLDER_PID=$!
-  echo "-> Placeholder running (PID $PLACEHOLDER_PID)"
+  echo "-> Placeholder PID: $PLACEHOLDER_PID"
+  sleep 2
 
   # --- 3. Drop old stale site if exists ---
   if [ -d "/home/frappe/bench/sites/site1.local" ]; then
@@ -34,28 +46,22 @@ if [ "$DB_READY" != "1" ]; then
     rm -rf /home/frappe/bench/sites/site1.local
   fi
 
-  # --- 4. Recreate DB and user ---
-  echo "-> Recreating DB and user..."
-  mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" <<EOF
-DROP DATABASE IF EXISTS frappe_hrms;
-DROP USER IF EXISTS 'frappe_hrms'@'%';
-CREATE DATABASE frappe_hrms CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'frappe_hrms'@'%' IDENTIFIED BY '${RFP_SITE_ADMIN_PASSWORD}';
-GRANT ALL PRIVILEGES ON frappe_hrms.* TO 'frappe_hrms'@'%';
-FLUSH PRIVILEGES;
-EOF
-  echo "-> DB and user ready!"
+  # --- 4. Drop existing DB so bench can create it fresh ---
+  echo "-> Dropping existing frappe_hrms DB if present..."
+  mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" \
+    -e "DROP DATABASE IF EXISTS frappe_hrms; DROP USER IF EXISTS 'frappe_hrms'@'%'; FLUSH PRIVILEGES;" 2>/dev/null || true
+  echo "-> Old DB/user cleared."
 
   # --- 5. Get HRMS app if not present ---
   if [ ! -d "/home/frappe/bench/apps/hrms" ]; then
     echo "-> Downloading HRMS app..."
     su -s /bin/bash frappe -c "cd /home/frappe/bench && bench get-app https://github.com/frappe/hrms --branch version-15"
   else
-    echo "-> HRMS app already present."
+    echo "-> HRMS already present."
   fi
 
-  # --- 6. bench new-site (this takes 10-20 mins) ---
-  echo "-> Creating site1.local via bench new-site (this takes time, placeholder keeps port 8000 alive)..."
+  # --- 6. bench new-site: let bench create the DB itself ---
+  echo "-> Running bench new-site (takes 15-20 min, placeholder keeps port alive)..."
   su -s /bin/bash frappe -c "
     cd /home/frappe/bench && \
     bench new-site site1.local \
@@ -71,7 +77,7 @@ EOF
   "
 
   # --- 7. Install HRMS ---
-  echo "-> Installing HRMS app..."
+  echo "-> Installing HRMS..."
   su -s /bin/bash frappe -c "cd /home/frappe/bench && bench --site site1.local install-app hrms"
 
   # --- 8. Migrate ---
@@ -80,11 +86,11 @@ EOF
 
   echo "-> Setup complete! Killing placeholder..."
   kill $PLACEHOLDER_PID 2>/dev/null || true
-  sleep 1
+  sleep 2
 else
-  echo "-> DB already initialized (tabSingles exists). Skipping new-site."
+  echo "-> tabSingles exists — DB already set up. Skipping new-site."
 fi
 
 # --- 9. Start bench ---
-echo "-> Starting ERPNext + HRMS..."
+echo "-> Starting Frappe HRMS..."
 exec su -s /bin/bash frappe -c "cd /home/frappe/bench && bench start"
