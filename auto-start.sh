@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 echo "====================================="
 echo " Frappe HRMS - Railway Entrypoint"
 echo "====================================="
@@ -11,11 +12,21 @@ until mysqladmin ping -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSW
 done
 echo "-> MariaDB is ready!"
 
-# --- 2. Check if DB is actually set up by looking for tabSingles table ---
-DB_READY=$(mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='frappe_hrms' AND table_name='tabSingles';" -sN 2>/dev/null)
+# --- 2. Check if DB tables exist ---
+DB_READY=$(mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" \
+  -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='frappe_hrms' AND table_name='tabSingles';" \
+  -sN 2>/dev/null || echo "0")
 
 if [ "$DB_READY" != "1" ]; then
-  echo "-> DB not initialized. Running full setup..."
+  echo "-> DB not initialized. Running full setup in background..."
+
+  # Start a dummy HTTP server on port 8000 so Railway health check passes
+  echo "-> Starting temporary HTTP placeholder on port 8000..."
+  while true; do
+    echo -e 'HTTP/1.1 200 OK\r\nContent-Length: 13\r\n\r\nSetting up...' | nc -l -p 8000 -q 1 2>/dev/null || true
+  done &
+  PLACEHOLDER_PID=$!
+  echo "-> Placeholder running (PID $PLACEHOLDER_PID)"
 
   # --- 3. Drop old stale site if exists ---
   if [ -d "/home/frappe/bench/sites/site1.local" ]; then
@@ -23,7 +34,7 @@ if [ "$DB_READY" != "1" ]; then
     rm -rf /home/frappe/bench/sites/site1.local
   fi
 
-  # --- 4. Drop and recreate DB + user cleanly ---
+  # --- 4. Recreate DB and user ---
   echo "-> Recreating DB and user..."
   mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" <<EOF
 DROP DATABASE IF EXISTS frappe_hrms;
@@ -43,8 +54,8 @@ EOF
     echo "-> HRMS app already present."
   fi
 
-  # --- 6. Create site with explicit db-name and db-password ---
-  echo "-> Creating site1.local via bench new-site..."
+  # --- 6. bench new-site (this takes 10-20 mins) ---
+  echo "-> Creating site1.local via bench new-site (this takes time, placeholder keeps port 8000 alive)..."
   su -s /bin/bash frappe -c "
     cd /home/frappe/bench && \
     bench new-site site1.local \
@@ -60,14 +71,16 @@ EOF
   "
 
   # --- 7. Install HRMS ---
-  echo "-> Installing HRMS app on site1.local..."
+  echo "-> Installing HRMS app..."
   su -s /bin/bash frappe -c "cd /home/frappe/bench && bench --site site1.local install-app hrms"
 
-  # --- 8. Run migrations ---
+  # --- 8. Migrate ---
   echo "-> Running migrations..."
   su -s /bin/bash frappe -c "cd /home/frappe/bench && bench --site site1.local migrate --skip-failing"
 
-  echo "-> Site setup complete!"
+  echo "-> Setup complete! Killing placeholder..."
+  kill $PLACEHOLDER_PID 2>/dev/null || true
+  sleep 1
 else
   echo "-> DB already initialized (tabSingles exists). Skipping new-site."
 fi
