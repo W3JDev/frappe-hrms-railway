@@ -20,9 +20,18 @@ config['db_host'] = os.environ.get('DB_HOST', 'mariadb.railway.internal')
 config['db_port'] = int(os.environ.get('DB_PORT', 3306))
 with open(config_path, 'w') as f:
     json.dump(config, f, indent=2)
-print('site_config.json patched:', config)
+print('Patched:', config.get('db_name'), '@', config.get('db_host'))
 "
   echo "-> site_config.json patched!"
+
+  # Grant the site DB user access from any host (Railway IPv6 network)
+  DB_NAME=$(python3 -c "import json; c=json.load(open('$SITE_CONFIG')); print(c['db_name'])")
+  DB_USER=$DB_NAME
+  DB_PASS=$(python3 -c "import json; c=json.load(open('$SITE_CONFIG')); print(c['db_password'])")
+  echo "-> Granting DB user ${DB_USER} access from any host..."
+  mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" -e \
+    "GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'%' IDENTIFIED BY '${DB_PASS}'; FLUSH PRIVILEGES;" 2>/dev/null || true
+  echo "-> DB user grant done!"
 fi
 
 SETUP_FLAG="/home/frappe/bench/sites/.hrms_installed"
