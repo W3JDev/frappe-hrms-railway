@@ -1,65 +1,64 @@
 #!/bin/bash
 
-echo "-> Waiting for external MariaDB at ${DB_HOST}:${DB_PORT}..."
+echo "====================================="
+echo " Frappe HRMS - Railway Entrypoint"
+echo "====================================="
+
+# --- 1. Wait for MariaDB ---
+echo "-> Waiting for MariaDB at ${DB_HOST}:${DB_PORT}..."
 until mysqladmin ping -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent 2>/dev/null; do
-  echo "   MariaDB not ready, retrying in 3s..."
+  echo "   Not ready, retrying in 3s..."
   sleep 3
 done
 echo "-> MariaDB is ready!"
 
-# Patch site_config.json so Frappe connects to the Railway MariaDB, not 127.0.0.1
-SITE_CONFIG="/home/frappe/bench/sites/site1.local/site_config.json"
-if [ -f "$SITE_CONFIG" ]; then
-  echo "-> Patching site_config.json with db_host=${DB_HOST}..."
-  python3 -c "
-import json, os
-config_path = '$SITE_CONFIG'
-with open(config_path) as f:
-    config = json.load(f)
-config['db_host'] = os.environ.get('DB_HOST', 'mariadb.railway.internal')
-config['db_port'] = int(os.environ.get('DB_PORT', 3306))
-with open(config_path, 'w') as f:
-    json.dump(config, f, indent=2)
-print('Patched db_name:', config.get('db_name'), 'db_host:', config.get('db_host'))
-"
-  echo "-> site_config.json patched!"
-
-  # Extract credentials from site_config
-  DB_NAME=$(python3 -c "import json; c=json.load(open('$SITE_CONFIG')); print(c['db_name'])")
-  DB_PASS=$(python3 -c "import json; c=json.load(open('$SITE_CONFIG')); print(c['db_password'])")
-  echo "-> Granting access for DB user '${DB_NAME}' from any host..."
-
-  # Drop old localhost-bound user, re-create with % wildcard
-  mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" <<-SQL
-    DROP USER IF EXISTS '${DB_NAME}'@'localhost';
-    CREATE USER IF NOT EXISTS '${DB_NAME}'@'%' IDENTIFIED BY '${DB_PASS}';
-    GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_NAME}'@'%';
-    FLUSH PRIVILEGES;
-SQL
-  echo "-> DB user grant done!"
-fi
-
-SETUP_FLAG="/home/frappe/bench/sites/.hrms_installed"
+SETUP_FLAG="/home/frappe/bench/sites/.setup_complete"
 
 if [ ! -f "$SETUP_FLAG" ]; then
-  echo "-> Installing HRMS into site1.local..."
+  echo "-> First boot: setting up site from scratch..."
 
+  # --- 2. Drop old broken site if exists ---
+  if [ -d "/home/frappe/bench/sites/site1.local" ]; then
+    echo "-> Removing stale site1.local directory..."
+    rm -rf /home/frappe/bench/sites/site1.local
+  fi
+
+  # --- 3. Get HRMS app if not present ---
   if [ ! -d "/home/frappe/bench/apps/hrms" ]; then
     echo "-> Downloading HRMS app..."
     su -s /bin/bash frappe -c "cd /home/frappe/bench && bench get-app https://github.com/frappe/hrms --branch version-15"
   else
-    echo "-> HRMS app already exists, skipping get-app"
+    echo "-> HRMS app already present."
   fi
 
-  echo "-> Installing HRMS on site1.local..."
+  # --- 4. Create site fresh with bench new-site ---
+  echo "-> Creating site1.local via bench new-site..."
+  su -s /bin/bash frappe -c "
+    cd /home/frappe/bench && \\
+    bench new-site site1.local \\
+      --mariadb-root-username root \\
+      --mariadb-root-password '${MYSQL_ROOT_PASSWORD}' \\
+      --db-host '${DB_HOST}' \\
+      --db-port '${DB_PORT}' \\
+      --admin-password '${RFP_SITE_ADMIN_PASSWORD:-admin}' \\
+      --no-mariadb-socket \\
+      --install-app erpnext
+  "
+
+  # --- 5. Install HRMS ---
+  echo "-> Installing HRMS app on site1.local..."
   su -s /bin/bash frappe -c "cd /home/frappe/bench && bench --site site1.local install-app hrms"
 
+  # --- 6. Run migrations ---
   echo "-> Running migrations..."
   su -s /bin/bash frappe -c "cd /home/frappe/bench && bench --site site1.local migrate --skip-failing"
 
   touch "$SETUP_FLAG"
-  echo "-> HRMS installed successfully!"
+  echo "-> Site setup complete!"
+else
+  echo "-> Site already set up, skipping new-site."
 fi
 
+# --- 7. Start bench ---
 echo "-> Starting ERPNext + HRMS..."
 exec su -s /bin/bash frappe -c "cd /home/frappe/bench && bench start"
