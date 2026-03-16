@@ -7,12 +7,29 @@ until mysqladmin ping -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSW
 done
 echo "-> MariaDB is ready!"
 
+# Patch site_config.json so Frappe connects to the Railway MariaDB, not 127.0.0.1
+SITE_CONFIG="/home/frappe/bench/sites/site1.local/site_config.json"
+if [ -f "$SITE_CONFIG" ]; then
+  echo "-> Patching site_config.json with db_host=${DB_HOST}..."
+  python3 -c "
+import json, os
+config_path = '$SITE_CONFIG'
+with open(config_path) as f:
+    config = json.load(f)
+config['db_host'] = os.environ.get('DB_HOST', 'mariadb.railway.internal')
+config['db_port'] = int(os.environ.get('DB_PORT', 3306))
+with open(config_path, 'w') as f:
+    json.dump(config, f, indent=2)
+print('site_config.json patched:', config)
+"
+  echo "-> site_config.json patched!"
+fi
+
 SETUP_FLAG="/home/frappe/bench/sites/.hrms_installed"
 
 if [ ! -f "$SETUP_FLAG" ]; then
   echo "-> Installing HRMS into site1.local..."
 
-  # Get HRMS app only if not already downloaded
   if [ ! -d "/home/frappe/bench/apps/hrms" ]; then
     echo "-> Downloading HRMS app..."
     su -s /bin/bash frappe -c "cd /home/frappe/bench && bench get-app https://github.com/frappe/hrms --branch version-15"
