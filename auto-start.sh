@@ -1,21 +1,26 @@
 #!/bin/bash
+set -e
 
-echo "-> Starting MariaDB..."
-sudo service mariadb start
-sleep 8
+echo "-> Waiting for external MariaDB at $DB_HOST:$DB_PORT..."
+until mysqladmin ping -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent 2>/dev/null; do
+  echo "   MariaDB not ready, retrying in 3s..."
+  sleep 3
+done
+echo "-> MariaDB is ready!"
 
 SETUP_FLAG="/home/frappe/bench/sites/.hrms_installed"
 
 if [ ! -f "$SETUP_FLAG" ]; then
-    echo "-> Installing HRMS into site1.local..."
-    cd /home/frappe/bench
-    /home/frappe/.local/bin/bench get-app https://github.com/frappe/hrms --branch version-15
-    /home/frappe/.local/bin/bench --site site1.local install-app hrms
-    /home/frappe/.local/bin/bench --site site1.local migrate --skip-failing
-    touch "$SETUP_FLAG"
-    echo "-> HRMS installed!"
+  echo "-> Installing HRMS into site1.local..."
+  su -s /bin/bash frappe -c "
+    cd /home/frappe/bench && \\
+    bench get-app https://github.com/frappe/hrms --branch version-15 && \\
+    bench --site site1.local install-app hrms && \\
+    bench --site site1.local migrate --skip-failing
+  "
+  touch "$SETUP_FLAG"
+  echo "-> HRMS installed!"
 fi
 
-echo "-> Starting ERPNext..."
-cd /home/frappe/bench
-exec /home/frappe/.local/bin/bench start
+echo "-> Starting ERPNext + HRMS..."
+exec su -s /bin/bash frappe -c "cd /home/frappe/bench && bench start"
