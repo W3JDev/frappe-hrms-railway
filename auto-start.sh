@@ -12,7 +12,15 @@ until mysqladmin ping -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSW
 done
 echo "-> MariaDB is ready!"
 
-# --- 2. Check if site DB has tabSingles (fully initialized) ---
+# --- 2. Always ensure HRMS app code is present (container is ephemeral!) ---
+if [ ! -d "/home/frappe/bench/apps/hrms" ]; then
+  echo "-> HRMS app code missing (ephemeral container). Fetching..."
+  su -s /bin/bash frappe -c "cd /home/frappe/bench && bench get-app https://github.com/frappe/hrms --branch version-15"
+else
+  echo "-> HRMS app code already present."
+fi
+
+# --- 3. Check if site DB has tabSingles (fully initialized) ---
 DB_READY=$(mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" \
   -e "SELECT IF(COUNT(*)>0,'1','0') FROM information_schema.tables WHERE table_schema='frappe_hrms' AND table_name='tabSingles';" \
   -sN 2>/dev/null || echo "0")
@@ -21,7 +29,7 @@ SITE_FOLDER_EXISTS=0
 echo "-> DB_READY=$DB_READY SITE_FOLDER_EXISTS=$SITE_FOLDER_EXISTS"
 
 if [ "$DB_READY" = "1" ] && [ "$SITE_FOLDER_EXISTS" = "1" ]; then
-  echo "-> Site and DB both ready. Skipping setup."
+  echo "-> Site and DB both ready. Skipping full setup."
 else
   echo "-> Setup needed. Running full setup..."
 
@@ -57,12 +65,6 @@ time.sleep(99999)
   mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" \
     -e "FLUSH PRIVILEGES;" 2>/dev/null || true
   echo "-> Stale DB/users cleared."
-
-  # Get HRMS app if not present
-  if [ ! -d "/home/frappe/bench/apps/hrms" ]; then
-    echo "-> Getting HRMS app..."
-    su -s /bin/bash frappe -c "cd /home/frappe/bench && bench get-app https://github.com/frappe/hrms --branch version-15"
-  fi
 
   # bench new-site
   echo "-> Running bench new-site with frappe_hrms db..."
@@ -122,7 +124,6 @@ else:
   host = os.environ['DB_HOST']
   port = os.environ.get('DB_PORT', '3306')
   root_pass = os.environ['MYSQL_ROOT_PASSWORD']
-  # Drop user if exists (any host), recreate with % and correct password, grant all
   sql = \"DROP USER IF EXISTS '{u}'@'%'; CREATE USER '{u}'@'%' IDENTIFIED BY '{p}'; GRANT ALL PRIVILEGES ON \`{db}\`.* TO '{u}'@'%'; FLUSH PRIVILEGES;\".format(u=db_name, p=db_password, db=db_name)
   result = subprocess.run(
     ['mysql', '-h', host, '-P', port, '-uroot', '-p'+root_pass, '-e', sql],
