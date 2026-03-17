@@ -107,8 +107,8 @@ with open(path, 'w') as f:
 print('Patched db_host=' + os.environ['DB_HOST'])
 "
 
-# --- Sync DB user password to match site_config.json ---
-echo "-> Syncing DB user password in MariaDB..."
+# --- Recreate DB user with correct password from site_config.json ---
+echo "-> Recreating DB user with correct password..."
 python3 -c "
 import json, subprocess, os
 path = '/home/frappe/bench/sites/site1.local/site_config.json'
@@ -116,22 +116,23 @@ with open(path, 'r') as f:
   cfg = json.load(f)
 db_name = cfg.get('db_name', 'frappe_hrms')
 db_password = cfg.get('db_password', '')
-db_user = db_name  # frappe uses db_name as the username
 if not db_password:
-  print('No db_password in site_config, skipping sync')
+  print('No db_password in site_config, skipping')
 else:
   host = os.environ['DB_HOST']
   port = os.environ.get('DB_PORT', '3306')
   root_pass = os.environ['MYSQL_ROOT_PASSWORD']
-  sql = \"ALTER USER '{u}'@'%' IDENTIFIED BY '{p}'; FLUSH PRIVILEGES;\".format(u=db_user, p=db_password)
+  # Drop user if exists (any host), recreate with % and correct password, grant all
+  sql = \"DROP USER IF EXISTS '{u}'@'%'; CREATE USER '{u}'@'%' IDENTIFIED BY '{p}'; GRANT ALL PRIVILEGES ON \`{db}\`.* TO '{u}'@'%'; FLUSH PRIVILEGES;\".format(u=db_name, p=db_password, db=db_name)
   result = subprocess.run(
     ['mysql', '-h', host, '-P', port, '-uroot', '-p'+root_pass, '-e', sql],
     capture_output=True, text=True
   )
   if result.returncode == 0:
-    print('DB user password synced for: ' + db_user)
+    print('DB user recreated OK: ' + db_name)
   else:
-    print('Warning: could not sync password: ' + result.stderr)
+    print('ERROR recreating user: ' + result.stderr)
+    exit(1)
 "
 
 # --- Set default site ---
