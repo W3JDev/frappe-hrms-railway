@@ -4,7 +4,33 @@ echo "====================================="
 echo " Frappe HRMS - Railway Entrypoint"
 echo "====================================="
 
-# --- 1. Wait for MariaDB ---
+# --- 1. Start Redis in background (required by Frappe) ---
+echo "-> Starting Redis..."
+redis-server --daemonize yes --port 11000 --loglevel warning
+redis-server --daemonize yes --port 12000 --loglevel warning
+redis-server --daemonize yes --port 13000 --loglevel warning
+sleep 2
+echo "-> Redis started on ports 11000 12000 13000"
+
+# --- 2. Patch common_site_config.json to use local Redis ---
+echo "-> Patching common_site_config.json for local Redis..."
+python3 -c "
+import json, os
+path = '/home/frappe/bench/sites/common_site_config.json'
+try:
+  with open(path, 'r') as f:
+    cfg = json.load(f)
+except:
+  cfg = {}
+cfg['redis_cache'] = 'redis://127.0.0.1:13000'
+cfg['redis_queue'] = 'redis://127.0.0.1:11000'
+cfg['redis_socketio'] = 'redis://127.0.0.1:12000'
+with open(path, 'w') as f:
+  json.dump(cfg, f, indent=2)
+print('Patched common_site_config.json with local Redis')
+"
+
+# --- 3. Wait for MariaDB ---
 echo "-> Waiting for MariaDB at ${DB_HOST}:${DB_PORT}..."
 until mysqladmin ping -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent 2>/dev/null; do
   echo "   Not ready, retrying in 3s..."
@@ -12,15 +38,15 @@ until mysqladmin ping -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSW
 done
 echo "-> MariaDB is ready!"
 
-# --- 2. Always ensure HRMS app code is present (container is ephemeral!) ---
+# --- 4. Always ensure HRMS app code is present (container is ephemeral!) ---
 if [ ! -d "/home/frappe/bench/apps/hrms" ]; then
-  echo "-> HRMS app code missing (ephemeral container). Fetching..."
+  echo "-> HRMS app code missing. Fetching..."
   su -s /bin/bash frappe -c "cd /home/frappe/bench && bench get-app https://github.com/frappe/hrms --branch version-15"
 else
   echo "-> HRMS app code already present."
 fi
 
-# --- 3. Check if site DB has tabSingles (fully initialized) ---
+# --- 5. Check if site DB is fully initialized ---
 DB_READY=$(mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" \
   -e "SELECT IF(COUNT(*)>0,'1','0') FROM information_schema.tables WHERE table_schema='frappe_hrms' AND table_name='tabSingles';" \
   -sN 2>/dev/null || echo "0")
@@ -52,10 +78,8 @@ time.sleep(99999)
   PLACEHOLDER_PID=$!
   sleep 2
 
-  # Wipe stale site folder
   rm -rf /home/frappe/bench/sites/site1.local
 
-  # Drop stale DB and users
   echo "-> Dropping stale DB and users..."
   mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" \
     -e "DROP DATABASE IF EXISTS frappe_hrms;" 2>/dev/null || true
@@ -64,10 +88,8 @@ time.sleep(99999)
     -sN 2>/dev/null | mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" 2>/dev/null || true
   mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" \
     -e "FLUSH PRIVILEGES;" 2>/dev/null || true
-  echo "-> Stale DB/users cleared."
 
-  # bench new-site
-  echo "-> Running bench new-site with frappe_hrms db..."
+  echo "-> Running bench new-site..."
   su -s /bin/bash frappe -c "
     cd /home/frappe/bench && \\
     bench new-site site1.local \\
@@ -82,20 +104,17 @@ time.sleep(99999)
       --install-app erpnext
   "
 
-  # Install HRMS
   echo "-> Installing HRMS..."
   su -s /bin/bash frappe -c "cd /home/frappe/bench && bench --site site1.local install-app hrms"
 
-  # Migrate
   echo "-> Running migrate..."
   su -s /bin/bash frappe -c "cd /home/frappe/bench && bench --site site1.local migrate --skip-failing"
 
-  echo "-> Setup done. Killing placeholder..."
   kill $PLACEHOLDER_PID 2>/dev/null || true
   sleep 2
 fi
 
-# --- Always patch site_config.json with correct DB host ---
+# --- 6. Always patch site_config.json db_host ---
 echo "-> Patching site_config.json db_host..."
 python3 -c "
 import json, os
@@ -109,7 +128,7 @@ with open(path, 'w') as f:
 print('Patched db_host=' + os.environ['DB_HOST'])
 "
 
-# --- Recreate DB user with correct password from site_config.json ---
+# --- 7. Recreate DB user with correct password ---
 echo "-> Recreating DB user with correct password..."
 python3 -c "
 import json, subprocess, os
@@ -132,14 +151,18 @@ else:
   if result.returncode == 0:
     print('DB user recreated OK: ' + db_name)
   else:
-    print('ERROR recreating user: ' + result.stderr)
+    print('ERROR: ' + result.stderr)
     exit(1)
 "
 
-# --- Set default site ---
+# --- 8. Reset admin password to RFP_SITE_ADMIN_PASSWORD ---
+echo "-> Resetting admin password..."
+su -s /bin/bash frappe -c "cd /home/frappe/bench && bench --site site1.local set-admin-password '${RFP_SITE_ADMIN_PASSWORD:-admin}'" || true
+
+# --- 9. Set default site ---
 echo "-> Setting default site..."
 su -s /bin/bash frappe -c "cd /home/frappe/bench && bench use site1.local" || true
 
-# --- Start bench serve ---
+# --- 10. Start bench serve ---
 echo "-> Starting Frappe HRMS..."
 exec su -s /bin/bash frappe -c "cd /home/frappe/bench && bench serve --port 8000"
