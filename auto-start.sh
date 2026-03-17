@@ -3,10 +3,27 @@ echo "====================================="
 echo " Frappe HRMS - Railway Entrypoint"
 echo "====================================="
 
+# --- 0. Patch db_host IMMEDIATELY for existing sites ---
+echo "-> Patching db_host in site_config if site exists..."
+SITE_CONFIG="/home/frappe/bench/sites/site1.local/site_config.json"
+if [ -f "$SITE_CONFIG" ]; then
+  python3 -c "
+import json, os
+with open('$SITE_CONFIG', 'r') as f:
+    cfg = json.load(f)
+cfg['db_host'] = os.environ['DB_HOST']
+cfg['db_port'] = int(os.environ.get('DB_PORT', 3306))
+with open('$SITE_CONFIG', 'w') as f:
+    json.dump(cfg, f, indent=2)
+print('site_config.json patched with db_host=' + os.environ['DB_HOST'])
+"
+fi
+echo '{"db_host": "'"${DB_HOST}"'", "db_port": '"${DB_PORT:-3306}"'}' > /home/frappe/bench/sites/common_site_config.json
+
 # --- 1. Wait for MariaDB ---
 echo "-> Waiting for MariaDB at ${DB_HOST}:${DB_PORT}..."
 until mysqladmin ping -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" --silent 2>/dev/null; do
-  echo "   Not ready, retrying in 3s..."
+  echo "  Not ready, retrying in 3s..."
   sleep 3
 done
 echo "-> MariaDB is ready!"
@@ -24,11 +41,11 @@ if [ "$DB_READY" != "1" ]; then
   python3 -c "
 import http.server, threading, time
 class H(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b'Setting up...')
-    def log_message(self, *a): pass
+  def do_GET(self):
+    self.send_response(200)
+    self.end_headers()
+    self.wfile.write(b'Setting up...')
+  def log_message(self, *a): pass
 s = http.server.HTTPServer(('0.0.0.0', 8000), H)
 t = threading.Thread(target=s.serve_forever)
 t.daemon = True
@@ -65,16 +82,30 @@ time.sleep(99999)
   su -s /bin/bash frappe -c "
     cd /home/frappe/bench && \
     bench new-site site1.local \
-    --mariadb-root-username root \
-    --mariadb-root-password '${MYSQL_ROOT_PASSWORD}' \
-    --db-host '${DB_HOST}' \
-    --db-port '${DB_PORT}' \
-    --db-name frappe_hrms \
-    --db-password '${RFP_SITE_ADMIN_PASSWORD}' \
-    --admin-password '${RFP_SITE_ADMIN_PASSWORD:-admin}' \
-    --no-mariadb-socket \
-    --install-app erpnext
-  "
+      --mariadb-root-username root \
+      --mariadb-root-password '${MYSQL_ROOT_PASSWORD}' \
+      --db-host '${DB_HOST}' \
+      --db-port '${DB_PORT}' \
+      --db-name frappe_hrms \
+      --db-password '${RFP_SITE_ADMIN_PASSWORD}' \
+      --admin-password '${RFP_SITE_ADMIN_PASSWORD:-admin}' \
+      --no-mariadb-socket \
+      --install-app erpnext
+    "
+
+  # --- 6.5. Patch site_config.json after new-site ---
+  echo "-> Patching site_config.json with correct db_host after bench new-site..."
+  python3 -c "
+import json, os
+path = '/home/frappe/bench/sites/site1.local/site_config.json'
+with open(path, 'r') as f:
+    cfg = json.load(f)
+cfg['db_host'] = os.environ['DB_HOST']
+cfg['db_port'] = int(os.environ.get('DB_PORT', 3306))
+with open(path, 'w') as f:
+    json.dump(cfg, f, indent=2)
+print('Patched site_config.json db_host=' + os.environ['DB_HOST'])
+"
 
   # --- 7. Install HRMS ---
   echo "-> Installing HRMS..."
