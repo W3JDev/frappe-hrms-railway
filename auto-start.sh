@@ -21,7 +21,7 @@ SITE_FOLDER_EXISTS=0
 echo "-> DB_READY=$DB_READY SITE_FOLDER_EXISTS=$SITE_FOLDER_EXISTS"
 
 if [ "$DB_READY" = "1" ] && [ "$SITE_FOLDER_EXISTS" = "1" ]; then
-  echo "-> Site and DB both ready. Patching db_host and starting..."
+  echo "-> Site and DB both ready. Skipping setup."
 else
   echo "-> Setup needed. Running full setup..."
 
@@ -67,16 +67,16 @@ time.sleep(99999)
   # bench new-site
   echo "-> Running bench new-site with frappe_hrms db..."
   su -s /bin/bash frappe -c "
-    cd /home/frappe/bench && \
-    bench new-site site1.local \
-      --mariadb-root-username root \
-      --mariadb-root-password '${MYSQL_ROOT_PASSWORD}' \
-      --db-host '${DB_HOST}' \
-      --db-port '${DB_PORT}' \
-      --db-name frappe_hrms \
-      --db-password '${RFP_SITE_ADMIN_PASSWORD}' \
-      --admin-password '${RFP_SITE_ADMIN_PASSWORD:-admin}' \
-      --no-mariadb-socket \
+    cd /home/frappe/bench && \\
+    bench new-site site1.local \\
+      --mariadb-root-username root \\
+      --mariadb-root-password '${MYSQL_ROOT_PASSWORD}' \\
+      --db-host '${DB_HOST}' \\
+      --db-port '${DB_PORT}' \\
+      --db-name frappe_hrms \\
+      --db-password '${RFP_SITE_ADMIN_PASSWORD}' \\
+      --admin-password '${RFP_SITE_ADMIN_PASSWORD:-admin}' \\
+      --no-mariadb-socket \\
       --install-app erpnext
   "
 
@@ -93,8 +93,8 @@ time.sleep(99999)
   sleep 2
 fi
 
-# --- Always patch site_config.json with correct DB host before starting ---
-echo "-> Patching site_config.json db_host to ${DB_HOST}..."
+# --- Always patch site_config.json with correct DB host ---
+echo "-> Patching site_config.json db_host..."
 python3 -c "
 import json, os
 path = '/home/frappe/bench/sites/site1.local/site_config.json'
@@ -104,13 +104,40 @@ cfg['db_host'] = os.environ['DB_HOST']
 cfg['db_port'] = int(os.environ.get('DB_PORT', 3306))
 with open(path, 'w') as f:
   json.dump(cfg, f, indent=2)
-print('Patched db_host=' + os.environ['DB_HOST'] + ' db_port=' + os.environ.get('DB_PORT','3306'))
+print('Patched db_host=' + os.environ['DB_HOST'])
+"
+
+# --- Sync DB user password to match site_config.json ---
+echo "-> Syncing DB user password in MariaDB..."
+python3 -c "
+import json, subprocess, os
+path = '/home/frappe/bench/sites/site1.local/site_config.json'
+with open(path, 'r') as f:
+  cfg = json.load(f)
+db_name = cfg.get('db_name', 'frappe_hrms')
+db_password = cfg.get('db_password', '')
+db_user = db_name  # frappe uses db_name as the username
+if not db_password:
+  print('No db_password in site_config, skipping sync')
+else:
+  host = os.environ['DB_HOST']
+  port = os.environ.get('DB_PORT', '3306')
+  root_pass = os.environ['MYSQL_ROOT_PASSWORD']
+  sql = \"ALTER USER '{u}'@'%' IDENTIFIED BY '{p}'; FLUSH PRIVILEGES;\".format(u=db_user, p=db_password)
+  result = subprocess.run(
+    ['mysql', '-h', host, '-P', port, '-uroot', '-p'+root_pass, '-e', sql],
+    capture_output=True, text=True
+  )
+  if result.returncode == 0:
+    print('DB user password synced for: ' + db_user)
+  else:
+    print('Warning: could not sync password: ' + result.stderr)
 "
 
 # --- Set default site ---
 echo "-> Setting default site..."
 su -s /bin/bash frappe -c "cd /home/frappe/bench && bench use site1.local" || true
 
-# --- Start bench serve (production mode, no debugger) ---
+# --- Start bench serve ---
 echo "-> Starting Frappe HRMS..."
 exec su -s /bin/bash frappe -c "cd /home/frappe/bench && bench serve --port 8000"
