@@ -3,7 +3,7 @@ echo "====================================="
 echo " Frappe HRMS - Railway Entrypoint"
 echo "====================================="
 
-# --- 0. Patch db_host IMMEDIATELY for existing sites ---
+# --- 0. Patch db_host in site_config.json ONLY (do NOT touch common_site_config) ---
 echo "-> Patching db_host in site_config if site exists..."
 SITE_CONFIG="/home/frappe/bench/sites/site1.local/site_config.json"
 if [ -f "$SITE_CONFIG" ]; then
@@ -15,10 +15,9 @@ cfg['db_host'] = os.environ['DB_HOST']
 cfg['db_port'] = int(os.environ.get('DB_PORT', 3306))
 with open('$SITE_CONFIG', 'w') as f:
     json.dump(cfg, f, indent=2)
-print('site_config.json patched with db_host=' + os.environ['DB_HOST'])
-"
+print('site_config.json patched: db_host=' + os.environ['DB_HOST'])
+" || echo "Patch failed, continuing..."
 fi
-echo '{"db_host": "'"${DB_HOST}"'", "db_port": '"${DB_PORT:-3306}"'}' > /home/frappe/bench/sites/common_site_config.json
 
 # --- 1. Wait for MariaDB ---
 echo "-> Waiting for MariaDB at ${DB_HOST}:${DB_PORT}..."
@@ -77,7 +76,7 @@ time.sleep(99999)
     echo "-> HRMS already present."
   fi
 
-  # --- 6. bench new-site: let bench create the DB itself ---
+  # --- 6. bench new-site ---
   echo "-> Running bench new-site (takes 15-20 min, placeholder keeps port alive)..."
   su -s /bin/bash frappe -c "
     cd /home/frappe/bench && \
@@ -94,7 +93,7 @@ time.sleep(99999)
     "
 
   # --- 6.5. Patch site_config.json after new-site ---
-  echo "-> Patching site_config.json with correct db_host after bench new-site..."
+  echo "-> Patching site_config.json db_host after bench new-site..."
   python3 -c "
 import json, os
 path = '/home/frappe/bench/sites/site1.local/site_config.json'
@@ -104,7 +103,7 @@ cfg['db_host'] = os.environ['DB_HOST']
 cfg['db_port'] = int(os.environ.get('DB_PORT', 3306))
 with open(path, 'w') as f:
     json.dump(cfg, f, indent=2)
-print('Patched site_config.json db_host=' + os.environ['DB_HOST'])
+print('site_config.json patched after new-site: db_host=' + os.environ['DB_HOST'])
 "
 
   # --- 7. Install HRMS ---
