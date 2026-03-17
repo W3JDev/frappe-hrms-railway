@@ -3,11 +3,18 @@ echo "====================================="
 echo " Frappe HRMS - Railway Entrypoint"
 echo "====================================="
 
-# --- 0. Patch db_host in site_config.json ONLY (do NOT touch common_site_config) ---
-echo "-> Patching db_host in site_config if site exists..."
+# --- 0. Validate site_config.json — wipe stale site if db_name is wrong ---
 SITE_CONFIG="/home/frappe/bench/sites/site1.local/site_config.json"
 if [ -f "$SITE_CONFIG" ]; then
-  python3 -c "
+  SITE_DB_NAME=$(python3 -c "import json; print(json.load(open('$SITE_CONFIG')).get('db_name',''))" 2>/dev/null || echo "")
+  echo "-> site_config db_name: $SITE_DB_NAME"
+  if [ "$SITE_DB_NAME" != "frappe_hrms" ]; then
+    echo "-> STALE SITE DETECTED (db_name=$SITE_DB_NAME). Wiping site folder to force re-init..."
+    rm -rf /home/frappe/bench/sites/site1.local
+    echo "-> Stale site wiped."
+  else
+    echo "-> Patching db_host in site_config.json..."
+    python3 -c "
 import json, os
 with open('$SITE_CONFIG', 'r') as f:
     cfg = json.load(f)
@@ -17,6 +24,7 @@ with open('$SITE_CONFIG', 'w') as f:
     json.dump(cfg, f, indent=2)
 print('site_config.json patched: db_host=' + os.environ['DB_HOST'])
 " || echo "Patch failed, continuing..."
+  fi
 fi
 
 # --- 1. Wait for MariaDB ---
@@ -63,10 +71,16 @@ time.sleep(99999)
   fi
 
   # --- 4. Drop existing DB so bench can create it fresh ---
-  echo "-> Dropping existing frappe_hrms DB if present..."
+  echo "-> Dropping ALL stale DBs and users..."
   mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" \
-    -e "DROP DATABASE IF EXISTS frappe_hrms; DROP USER IF EXISTS 'frappe_hrms'@'%'; FLUSH PRIVILEGES;" 2>/dev/null || true
-  echo "-> Old DB/user cleared."
+    -e "DROP DATABASE IF EXISTS frappe_hrms;" 2>/dev/null || true
+  # Drop any stale users that start with underscore (auto-created by bench)
+  mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" \
+    -e "SELECT CONCAT('DROP USER IF EXISTS \`', user, '\`@\`%\`;') FROM mysql.user WHERE user LIKE '\_%';" \
+    -sN 2>/dev/null | mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" 2>/dev/null || true
+  mysql -h"${DB_HOST}" -P"${DB_PORT}" -uroot -p"${MYSQL_ROOT_PASSWORD}" \
+    -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+  echo "-> Stale DBs/users cleared."
 
   # --- 5. Get HRMS app if not present ---
   if [ ! -d "/home/frappe/bench/apps/hrms" ]; then
@@ -77,7 +91,7 @@ time.sleep(99999)
   fi
 
   # --- 6. bench new-site ---
-  echo "-> Running bench new-site (takes 15-20 min, placeholder keeps port alive)..."
+  echo "-> Running bench new-site..."
   su -s /bin/bash frappe -c "
     cd /home/frappe/bench && \
     bench new-site site1.local \
@@ -103,7 +117,7 @@ cfg['db_host'] = os.environ['DB_HOST']
 cfg['db_port'] = int(os.environ.get('DB_PORT', 3306))
 with open(path, 'w') as f:
     json.dump(cfg, f, indent=2)
-print('site_config.json patched after new-site: db_host=' + os.environ['DB_HOST'])
+print('site_config.json patched: db_host=' + os.environ['DB_HOST'])
 "
 
   # --- 7. Install HRMS ---
@@ -118,7 +132,7 @@ print('site_config.json patched after new-site: db_host=' + os.environ['DB_HOST'
   kill $PLACEHOLDER_PID 2>/dev/null || true
   sleep 2
 else
-  echo "-> tabSingles exists — DB already set up. Skipping new-site."
+  echo "-> tabSingles exists in frappe_hrms — DB ready. Skipping new-site."
 fi
 
 # --- 9. Start bench ---
